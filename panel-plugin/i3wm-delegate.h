@@ -27,9 +27,13 @@ typedef struct _i3workspace
     gchar *name;
     gboolean focused;
     gboolean urgent;
+    gboolean visible;
+    gchar *output;
 } i3workspace;
 
-typedef void (*i3wmWorkspaceCallback) (i3workspace *workspace, gpointer data);
+typedef void (*i3wmWorkspaceCallback) (gpointer data);
+typedef void (*i3wmModeCallback_fun) (gchar *mode, gpointer data);
+typedef void (*i3wmOutputCallback_fun) (gchar *mode, gpointer data);
 typedef void (*i3wmIpcShutdownCallback) (gpointer data);
 
 typedef struct _i3wm_callback
@@ -37,6 +41,18 @@ typedef struct _i3wm_callback
     i3wmWorkspaceCallback function;
     gpointer data;
 } i3wmCallback;
+
+typedef struct _i3wm_mode_callback
+{
+    i3wmModeCallback_fun function;
+    gpointer data;
+} i3wmModeCallback;
+
+typedef struct _i3wm_output_callback
+{
+    i3wmOutputCallback_fun function;
+    gpointer data;
+} i3wmOutputCallback;
 
 typedef struct _i3windowManager
 {
@@ -49,6 +65,8 @@ typedef struct _i3windowManager
     i3wmCallback on_workspace_focused;
     i3wmCallback on_workspace_urgent;
     i3wmCallback on_workspace_renamed;
+    i3wmModeCallback on_mode_changed;
+    i3wmOutputCallback on_output_changed;
     i3wmIpcShutdownCallback on_ipc_shutdown;
     gpointer on_ipc_shutdown_data;
 }
@@ -84,6 +102,12 @@ i3wm_set_on_workspace_urgent(i3windowManager *i3wm, i3wmWorkspaceCallback callba
 
 void
 i3wm_set_on_workspace_renamed(i3windowManager *i3wm, i3wmWorkspaceCallback callback, gpointer data);
+
+void
+i3wm_set_on_mode_changed(i3windowManager *i3wm, i3wmModeCallback_fun callback, gpointer data);
+
+void
+i3wm_set_on_output_changed(i3windowManager *i3wm, i3wmOutputCallback_fun callback, gpointer data);
 
 void
 i3wm_set_on_ipc_shutdown(i3windowManager *i3wm, i3wmIpcShutdownCallback callback, gpointer data);

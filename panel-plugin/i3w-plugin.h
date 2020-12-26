@@ -20,6 +20,7 @@
 #define __PLUGIN_H__
 
 #include "i3wm-delegate.h"
+#include "i3w-multi-monitor-utils.h"
 #include "i3w-config.h"
 
 G_BEGIN_DECLS
@@ -35,6 +36,9 @@ typedef struct
 
     // hash table of i3workspace * => GtkButton *
     GHashTable      *workspace_buttons;
+
+	// binding mode label
+	GtkWidget       *mode_label;
 
     i3WorkspacesConfig *config;
 

@@ -23,7 +23,7 @@
 #include <string.h>
 #endif
 
-#include <libxfce4panel/xfce-hvbox.h>
+#include <libxfce4panel/libxfce4panel.h>
 #include <glib/gprintf.h>
 
 #include "i3w-plugin.h"
@@ -73,17 +73,26 @@ static gboolean
 on_workspace_scrolled(GtkWidget *ebox, GdkEventScroll *ev, gpointer data);
 
 static void
-on_workspace_created(i3workspace *workspace, gpointer data);
+on_workspace_created(gpointer data);
 static void
-on_workspace_destroyed(i3workspace *workspace, gpointer data);
+on_workspace_destroyed(gpointer data);
 static void
-on_workspace_changed(i3workspace *workspace, gpointer data);
+on_workspace_changed(gpointer data);
+
+static void
+on_mode_changed(gchar *mode, gpointer data);
+
+static void
+on_output_changed(gchar *mode, gpointer data);
 
 static void
 on_ipc_shutdown(gpointer i3_w);
 
 static void
 recover_from_disconnect(i3WorkspacesPlugin *i3_workspaces);
+
+static void
+handle_change_output(i3WorkspacesPlugin* i3_workspaces);
 
 /* register the plugin */
 XFCE_PANEL_PLUGIN_REGISTER(construct);
@@ -100,18 +109,23 @@ static void
 connect_callbacks(i3WorkspacesPlugin *i3_workspaces)
 {
     i3wm_set_on_workspace_created(i3_workspaces->i3wm,
-            on_workspace_created, i3_workspaces);
+            on_workspace_changed, i3_workspaces);
     i3wm_set_on_workspace_destroyed(i3_workspaces->i3wm,
-            on_workspace_destroyed, i3_workspaces);
+            on_workspace_changed, i3_workspaces);
     i3wm_set_on_workspace_blurred(i3_workspaces->i3wm,
             on_workspace_changed, i3_workspaces);
     i3wm_set_on_workspace_focused(i3_workspaces->i3wm,
             on_workspace_changed, i3_workspaces);
     i3wm_set_on_workspace_urgent(i3_workspaces->i3wm,
             on_workspace_changed, i3_workspaces);
+    i3wm_set_on_mode_changed(i3_workspaces->i3wm,
+            on_mode_changed, i3_workspaces);
+    i3wm_set_on_output_changed(i3_workspaces->i3wm,
+            on_output_changed, i3_workspaces);
     i3wm_set_on_ipc_shutdown(i3_workspaces->i3wm,
             on_ipc_shutdown, i3_workspaces);
 }
+
 
 /**
  * construct_workspaces:
@@ -124,11 +138,12 @@ connect_callbacks(i3WorkspacesPlugin *i3_workspaces)
 static i3WorkspacesPlugin *
 construct_workspaces(XfcePanelPlugin *plugin)
 {
+
     i3WorkspacesPlugin *i3_workspaces;
     GtkOrientation orientation;
 
     /* allocate memory for the plugin structure */
-    i3_workspaces = panel_slice_new0(i3WorkspacesPlugin);
+    i3_workspaces = g_slice_new0(i3WorkspacesPlugin);
 
     /* pointer to plugin */
     i3_workspaces->plugin = plugin;
@@ -149,19 +164,22 @@ construct_workspaces(XfcePanelPlugin *plugin)
     g_signal_connect(G_OBJECT(i3_workspaces->ebox), "scroll-event",
             G_CALLBACK(on_workspace_scrolled), i3_workspaces);
 
-    i3_workspaces->hvbox = xfce_hvbox_new(orientation, FALSE, 2);
+    i3_workspaces->hvbox = gtk_box_new(orientation, 2);
     gtk_widget_show(i3_workspaces->hvbox);
     gtk_container_add(GTK_CONTAINER(i3_workspaces->ebox), i3_workspaces->hvbox);
 
     i3_workspaces->workspace_buttons = g_hash_table_new(g_direct_hash, g_direct_equal);
 
+	/* Add a label for the binding mode */
+	i3_workspaces->mode_label = gtk_label_new(NULL);
+	gtk_box_pack_end(GTK_BOX(i3_workspaces->hvbox), i3_workspaces->mode_label, FALSE, FALSE, 0);
+	gtk_widget_show(i3_workspaces->mode_label);
+
     GError *err = NULL;
     i3_workspaces->i3wm = i3wm_construct(&err);
     if (NULL != err)
     {
-        //TODO: error_state_on();
         recover_from_disconnect(i3_workspaces);
-        //TODO: error_state_off();
     }
 
     connect_callbacks(i3_workspaces);
@@ -203,6 +221,9 @@ construct(XfcePanelPlugin *plugin)
 
     /* show the configure menu item */
     xfce_panel_plugin_menu_show_configure(plugin);
+
+    /* Auto-detect output configuration */
+    handle_change_output(i3_workspaces);
 }
 
 /**
@@ -226,7 +247,7 @@ destruct(XfcePanelPlugin *plugin, i3WorkspacesPlugin *i3_workspaces)
     i3wm_destruct(i3_workspaces->i3wm);
 
     /* free the plugin structure */
-    panel_slice_free(i3WorkspacesPlugin, i3_workspaces);
+    g_slice_free(i3WorkspacesPlugin, i3_workspaces);
 }
 
 /**
@@ -270,7 +291,7 @@ orientation_changed(XfcePanelPlugin *plugin,
         GtkOrientation orientation, i3WorkspacesPlugin *i3_workspaces)
 {
     /* change the orienation of the box */
-    xfce_hvbox_set_orientation(XFCE_HVBOX(i3_workspaces->hvbox), orientation);
+    gtk_orientable_set_orientation(GTK_ORIENTABLE(i3_workspaces->hvbox), orientation);
 }
 
 
@@ -284,6 +305,7 @@ orientation_changed(XfcePanelPlugin *plugin,
 static void
 configure_plugin(XfcePanelPlugin *plugin, i3WorkspacesPlugin *i3_workspaces)
 {
+
     i3_workspaces_config_show(i3_workspaces->config, plugin,
             config_changed, (gpointer)i3_workspaces);
 }
@@ -298,6 +320,8 @@ static void
 config_changed(gpointer cb_data)
 {
     i3WorkspacesPlugin *i3_workspaces = (i3WorkspacesPlugin *) cb_data;
+
+    handle_change_output(i3_workspaces);
     remove_workspaces(i3_workspaces);
     add_workspaces(i3_workspaces);
 }
@@ -317,7 +341,9 @@ add_workspaces(i3WorkspacesPlugin *i3_workspaces)
     for (witem = wlist; witem != NULL; witem = witem->next)
     {
         i3workspace *workspace = (i3workspace *) witem->data;
-        if (workspace)
+        if (workspace &&
+            (i3_workspaces->config->output[0] == 0 ||
+             g_strcmp0(i3_workspaces->config->output, workspace->output) == 0))
         {
             GtkWidget * button;
             button = xfce_panel_create_button();
@@ -327,6 +353,9 @@ add_workspaces(i3WorkspacesPlugin *i3_workspaces)
 
             g_signal_connect(G_OBJECT(button), "clicked",
                     G_CALLBACK(on_workspace_clicked), i3_workspaces);
+
+            /* show the panel's right-click menu on this button */
+            xfce_panel_plugin_add_action_widget(i3_workspaces->plugin, button);
 
             /* avoid acceleration key interference */
             gtk_button_set_use_underline(GTK_BUTTON(button), FALSE);
@@ -353,14 +382,14 @@ remove_workspaces(i3WorkspacesPlugin *i3_workspaces)
 }
 
 /**
- * on_workspace_created:
+ * on_workspace_changed:
  * @workspace: the workspace
  * @data: the workspaces plugin
  *
- * Workspace created event handler.
+ * Workspace changed event handler.
  */
 static void
-on_workspace_created(i3workspace *workspace, gpointer data)
+on_workspace_changed(gpointer data)
 {
     i3WorkspacesPlugin *i3_workspaces = (i3WorkspacesPlugin *) data;
 
@@ -369,37 +398,76 @@ on_workspace_created(i3workspace *workspace, gpointer data)
 }
 
 /**
- * on_workspace_destroyed:
- * @workspace: the workspace
+ * on_mode_changed:
+ * @mode: the mode
  * @data: the workspaces plugin
  *
- * Workspace destroyed event handler.
+ * Binging mode changed event handler.
  */
 static void
-on_workspace_destroyed(i3workspace *workspace, gpointer data)
+on_mode_changed(gchar *mode, gpointer data)
 {
     i3WorkspacesPlugin *i3_workspaces = (i3WorkspacesPlugin *) data;
+	if (!strncmp(mode, "default", 7)) {
+		gtk_label_set_text((GtkLabel *) i3_workspaces->mode_label, "");
+    }
+	else {
+		// allocate space for the maximum possible size of the label
+		gulong maxlen = strlen(mode) + 37;
+		gchar *label_str = (gchar *) calloc(maxlen, sizeof(gchar));
 
-    GtkWidget *button = (GtkWidget *) g_hash_table_lookup(i3_workspaces->workspace_buttons, workspace);
-    g_hash_table_remove(i3_workspaces->workspace_buttons, workspace);
-    gtk_widget_destroy(button);
+		static gchar *template = "<span foreground=\"#%06X\">%s</span>";
+		g_snprintf(label_str, maxlen, template, i3_workspaces->config->mode_color, mode);
+
+		gtk_label_set_markup((GtkLabel *) i3_workspaces->mode_label, label_str);
+	}
 }
 
 /**
- * on_workspace_changed:
- * @workspace: the workspace
- * @data: the workspaces plugin
+ * handle_change_output:
+ * @i3_workspaces: the workspaces plugin
  *
- * Workspace changed event handler.
+ * Recomputes the panel's output based on XRandR's current data.
+ * Does not run if auto_detect_outputs is set to false.
  */
 static void
-on_workspace_changed(i3workspace *workspace, gpointer data)
+handle_change_output (i3WorkspacesPlugin* i3_workspaces)
+{
+
+    if(!i3_workspaces->config->auto_detect_outputs) return;
+
+    // Re-query X Server for monitor information, since it may have changed
+    i3_workspaces_outputs_t outputs = get_outputs();
+
+    // Get the plugin's widget window and its location in root window (i.e: screen) coordinates
+    int x, y;
+    GdkWindow* window = gtk_widget_get_window(i3_workspaces->ebox);
+    gdk_window_get_root_origin(window, &x, &y);
+
+    // Get the monitor name for the window location and set the config value
+    char* output_name = get_monitor_name_at(outputs, x, y);
+
+    i3_workspaces->config->output = output_name;
+    remove_workspaces(i3_workspaces);
+    add_workspaces(i3_workspaces);
+
+    free_outputs(outputs);
+}
+
+/**
+ * on_output_changed:
+ * @change: the change field, always "unspecified" for now
+ * @data: the workspaces plugin
+ *
+ * Output changed event handler.
+ */
+static void
+on_output_changed(gchar *mode, gpointer data)
 {
     i3WorkspacesPlugin *i3_workspaces = (i3WorkspacesPlugin *) data;
-
-    GtkWidget *button = (GtkWidget *) g_hash_table_lookup(i3_workspaces->workspace_buttons, workspace);
-    set_button_label(button, workspace, i3_workspaces->config);
+    handle_change_output(i3_workspaces);
 }
+
 
 /**
  * set_button_label:
@@ -411,7 +479,7 @@ on_workspace_changed(i3workspace *workspace, gpointer data)
  * Generate the label for the workspace button.
  */
 static void
-set_button_label(GtkWidget *button, i3workspace *workspace, 
+set_button_label(GtkWidget *button, i3workspace *workspace,
         i3WorkspacesConfig *config)
 {
     static gchar *template = "<span foreground=\"#%06X\" weight=\"%s\">%s</span>";
@@ -426,9 +494,15 @@ set_button_label(GtkWidget *button, i3workspace *workspace,
     gulong maxlen = strlen(name) + 51;
     gchar *label_str = (gchar *) calloc(maxlen, sizeof(gchar));
 
+    // Set label color based on workspace state
+    guint32 color;
+    if (workspace->urgent) color = config->urgent_color;
+    else if (workspace->focused) color = config->focused_color;
+    else if (workspace->visible) color = config->visible_color;
+    else color = config->normal_color;
+
     g_snprintf(label_str, maxlen, template,
-            workspace->urgent ? config->urgent_color :
-                (workspace->focused ? config->focused_color : config->normal_color),
+            color,
             workspace->focused ? focused_weight : blurred_weight,
             name);
 
@@ -533,9 +607,9 @@ on_workspace_scrolled(GtkWidget *ebox, GdkEventScroll *ev, gpointer data)
     if (witem == NULL)
         return FALSE;
 
-    if (ev->direction == GDK_SCROLL_DOWN)
+    if (ev->direction == GDK_SCROLL_UP)
         witem = witem->next;
-    else if (ev->direction == GDK_SCROLL_UP)
+    else if (ev->direction == GDK_SCROLL_DOWN)
         witem = witem->prev;
     else
         return FALSE;
@@ -563,14 +637,11 @@ on_ipc_shutdown(gpointer i3_w)
     i3wm_destruct(i3_workspaces->i3wm);
     i3_workspaces->i3wm = NULL;
 
-    //FIXME fix this
-    //TODO: error_state_on();
-    //recover_from_disconnect(i3_workspaces);
-    //TODO: error_state_off();
+    recover_from_disconnect(i3_workspaces);
 
-    //connect_callbacks(i3_workspaces);
+    connect_callbacks(i3_workspaces);
 
-    //add_workspaces(i3_workspaces);
+    add_workspaces(i3_workspaces);
 }
 
 static void
@@ -581,7 +652,7 @@ recover_from_disconnect(i3WorkspacesPlugin *i3_workspaces)
     i3_workspaces->i3wm = i3wm_construct(&err);
     while (NULL != err)
     {
-        //fprintf(stderr, "Cannot connect to the i3 window manager: %s\n", err->message);
+        fprintf(stderr, "Cannot connect to the i3 window manager: %s\n", err->message);
         g_error_free(err);
         err = NULL;
         i3_workspaces->i3wm = i3wm_construct(&err);
